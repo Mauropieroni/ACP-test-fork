@@ -1,3 +1,4 @@
 **/*.pt
 **/figures/**
 **/*.DS_Store*
+**/**.egg*
