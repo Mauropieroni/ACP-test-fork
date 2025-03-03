@@ -1,3 +1,0 @@
-[submodule "submodules/sbi"]
-	path = submodules/sbi
-	url = git@github.com:james-alvey-42/sbi-acp.git
