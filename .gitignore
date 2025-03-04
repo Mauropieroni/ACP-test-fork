@@ -2,3 +2,4 @@
 **/figures/**
 **/*.DS_Store*
 **/**.egg*
+**/wandb/** */
