@@ -16,7 +16,8 @@ n_train_data = 10_000
 n_val_data = 1_000
 n_samples = 10_000
 
-task = sbibm.get_task("two_moons")
+example_name = "two_moons"
+task = sbibm.get_task(example_name)
 prior = task.get_prior_dist()
 simulator = task.get_simulator()
 observation = task.get_observation(num_observation=1)
@@ -253,4 +254,5 @@ def run_inference(n_networks=n_networks, num_epochs=num_epochs):
 
 
 if __name__ == "__main__":
-    run_inference()
+    res = run_inference()
+    np.savez(example_name + ".npz", train=res[0], val=res[1], KL=res[2])
