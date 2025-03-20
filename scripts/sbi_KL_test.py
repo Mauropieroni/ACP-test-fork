@@ -77,7 +77,9 @@ def get_R(samples):
     return term_1 + term_2
 
 
-def plot_losses(train_losses, val_losses, colors=["r", "g", "b", "y"]):
+def plot_losses(
+    train_losses, val_losses, num_epochs=num_epochs, colors=["r", "g", "b", "y"]
+):
 
     plt.figure()
     for network_id in range(n_networks):
