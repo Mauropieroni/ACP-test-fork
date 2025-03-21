@@ -1,6 +1,7 @@
 import os
 import sbi
 import sbibm
+import tqdm
 from sympy import ordered
 import torch
 from sbi.neural_nets.net_builders import build_nsf
@@ -13,7 +14,7 @@ import corner
 import numpy as np
 
 n_networks = 4
-num_epochs = 10
+num_epochs = 100
 n_train_data = 10_000
 n_val_data = 1_000
 n_samples = 10_000
@@ -33,7 +34,7 @@ if not os.path.isdir(save_path):
     os.mkdir(save_path)
 
 
-lrs = [1e-2, 3e-3, 1e-3, 3e-4]
+lrs = [3e-3, 1e-3, 3e-4, 3e-4]
 
 
 def get_R(samples):
@@ -96,10 +97,6 @@ def plot_losses(
 
     plt.figure()
     for network_id in range(n_networks):
-        print(train_losses[network_id].shape)
-        print(val_losses[network_id].shape)
-        print(num_epochs)
-
         plt.plot(train_losses[network_id], c=colors[network_id], alpha=0.3)
         plt.plot(
             157 * np.linspace(1, num_epochs, num_epochs),
@@ -185,11 +182,6 @@ def swap_schedulers(scheduler1, scheduler2):
 def swap_probability(val_loss1, val_loss2, lr1, lr2):
     """Compute the swap probability for two learning rates."""
 
-    print("val_loss1:", val_loss1)
-    print("val_loss2:", val_loss2)
-    print("lr1:", lr1)
-    print("lr2:", lr2)
-
     return min(
         1,
         np.exp(-(1 / lr1 - 1 / lr2) * (val_loss2 - val_loss1)),
@@ -241,7 +233,7 @@ def run_inference(
     divergence = []
     orders = np.arange(n_networks)
 
-    for epoch in range(num_epochs):
+    for epoch in tqdm.tqdm(range(num_epochs)):
         for density_estimator in density_estimators:
             density_estimator.train()
 
@@ -280,18 +272,23 @@ def run_inference(
             scheduler.step()
             learning_rates[network_id].append(scheduler.get_last_lr())
 
-        posteriors = []
+        if (epoch % 10 == 0 and epoch > 1) or epoch == num_epochs - 1:
+            posteriors = []
 
-        if epoch % 10 == 0 and epoch > 1:
-            KL_vals = np.zeros((n_networks, n_networks))
+            lrs_now = [optimizer.param_groups[0]["lr"] for optimizer in optimizers]
+            n_equals = 1 + len(lrs_now) - len(np.unique(lrs_now))
+            print(lrs_now)
+            print("Number of equal learning rates:", n_equals)
 
-            for network_id, density_estimator in zip(
-                range(n_networks), density_estimators
-            ):
-                posteriors.append(DirectPosterior(density_estimator, prior))
+            KL_vals = np.zeros((n_equals, n_equals))
 
-            for n_i in range(n_networks):
-                for n_j in range(n_i + 1, n_networks):
+            for i in range(n_equals):
+                posteriors.append(
+                    DirectPosterior(density_estimators[orders[-1 - i]], prior)
+                )
+
+            for n_i in range(n_equals):
+                for n_j in range(n_i + 1, n_equals):
 
                     # print("Computing KL between networks", n_i, "and", n_j)
                     KL_vals[n_i, n_j] = KLval(
@@ -300,29 +297,25 @@ def run_inference(
 
             divergence.append(KL_vals)
 
-        lr_min = optimizers[orders[-1]].param_groups[0]["lr"]
+            for i in range(n_networks - 1):
 
-        for i in range(n_networks - 1):
+                swap_prob = swap_probability(
+                    val_losses[orders[i]][-1],
+                    val_losses[orders[i + 1]][-1],
+                    optimizers[orders[i]].param_groups[0]["lr"] / np.min(lrs),
+                    optimizers[orders[i + 1]].param_groups[0]["lr"] / np.min(lrs),
+                )
 
-            swap_prob = swap_probability(
-                val_losses[orders[i]][-1],
-                val_losses[orders[i + 1]][-1],
-                optimizers[orders[i]].param_groups[0]["lr"] / lr_min,
-                optimizers[orders[i + 1]].param_groups[0]["lr"] / lr_min,
-            )
+                # print("Swap probability:", swap_prob)
 
-            print("Swap probability:", swap_prob)
+                if np.random.rand() < swap_prob:
 
-            if np.random.rand() < swap_prob:
+                    # print("Swapping learning rates and schedulers")
 
-                print("Swapping learning rates and schedulers")
-
-                swap_learning_rates(optimizers[orders[i]], optimizers[orders[i + 1]])
-                swap_schedulers(schedulers[orders[i]], schedulers[orders[i + 1]])
-
-                print(orders)
-                orders[i], orders[i + 1] = orders[i + 1], orders[i]
-                print(orders)
+                    swap_learning_rates(
+                        optimizers[orders[i]], optimizers[orders[i + 1]]
+                    )
+                    swap_schedulers(schedulers[orders[i]], schedulers[orders[i + 1]])
 
     p_samples = []
     for posterior in posteriors:
