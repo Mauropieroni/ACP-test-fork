@@ -4,3 +4,5 @@
 **/**.egg*
 **/wandb/** */
 **/__pycache__/
+**/*.npz
+**/sbi-logs/
