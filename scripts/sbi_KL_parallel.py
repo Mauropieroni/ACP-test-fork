@@ -13,9 +13,9 @@ import corner
 
 import numpy as np
 
-n_networks = 4
+n_networks = 5
 num_epochs = 100
-n_train_data = 10_000
+n_train_data = 500
 n_val_data = 1_000
 n_samples = 10_000
 KL_tol = 1e-2
@@ -34,7 +34,7 @@ if not os.path.isdir(save_path):
     os.mkdir(save_path)
 
 
-lrs = [3e-3, 1e-3, 3e-4, 3e-4]
+lrs = [1e-2, 3e-3, 1e-3, 3e-4, 3e-4]
 
 
 def get_R(samples):
@@ -92,19 +92,27 @@ def get_R(samples):
 
 
 def plot_losses(
-    train_losses, val_losses, num_epochs=num_epochs, colors=["r", "g", "b", "y"]
+    train_losses,
+    val_losses,
+    num_epochs=num_epochs,
+    colors=["r", "g", "b", "y", "purple"],
 ):
 
     plt.figure()
     for network_id in range(n_networks):
         plt.plot(train_losses[network_id], c=colors[network_id], alpha=0.3)
+
+        rescale = train_losses[network_id].shape[-1] / val_losses[network_id].shape[-1]
         plt.plot(
-            157 * np.linspace(1, num_epochs, num_epochs),
+            rescale * np.linspace(1, num_epochs, num_epochs),
             val_losses[network_id],
             c=colors[network_id],
             label={network_id},
             # marker="o",
         )
+
+    for i in np.arange(1, num_epochs + 1, 10):
+        plt.axvline(i * rescale, c="grey", linestyle="--")
     plt.legend()
 
 
