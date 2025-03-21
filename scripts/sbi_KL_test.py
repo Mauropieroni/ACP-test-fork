@@ -11,7 +11,7 @@ import corner
 import numpy as np
 
 n_networks = 4
-num_epochs = 10
+num_epochs = 300
 n_train_data = 10_000
 n_val_data = 1_000
 n_samples = 10_000
@@ -89,8 +89,10 @@ def plot_losses(
             157 * np.linspace(1, num_epochs, num_epochs),
             val_losses[network_id],
             c=colors[network_id],
-            marker="o",
+            label={network_id}
+            #marker="o",
         )
+    plt.legend()
 
 
 class EmbeddingNet(torch.nn.Module):
@@ -123,44 +125,47 @@ class NPEData(torch.utils.data.Dataset):
         return self.theta.shape[0]
 
     def __getitem__(self, index: int):
-        return self.theta[index, ...], self.x[index, ...]
+        theta = prior.sample((1,))
+        x = simulator(theta)[0]
+        return theta, x
 
 
 def build_density_estimator(prior=prior, simulator=simulator):
-    embedding_net = EmbeddingNet(in_features=2)
+    # embedding_net = EmbeddingNet(in_features=2)
     dummy_data = NPEData(num_samples=64, prior=prior, simulator=simulator)
     density_estimator = build_nsf(
         batch_x=dummy_data.theta,
         batch_y=dummy_data.x,
-        input_dim=2,
-        embedding_net=embedding_net,
-        hidden_features=128,
-        num_transforms=3,
-        num_bins=8,
-        tails="linear",
-        tail_bound=5,
-        apply_unconditional_transform=False,
+        input_dim=dummy_data.x.shape[-1],
+        # embedding_net=embedding_net,
+        # hidden_features=128,
+        # num_transforms=3,
+        # num_bins=8,
+        # tails="linear",
+        # tail_bound=5,
+        # apply_unconditional_transform=False,
     )
     return density_estimator
 
 
 def setup_scheduler(optimizer):
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=0.1,
-        patience=10,
-        verbose=True,
-        threshold=1e-4,
-        threshold_mode="rel",
-        cooldown=0,
-        min_lr=0,
-        eps=1e-8,
-    )
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #     optimizer,
+    #     mode="min",
+    #     factor=0.1,
+    #     patience=10,
+    #     verbose=True,
+    #     threshold=1e-4,
+    #     threshold_mode="rel",
+    #     cooldown=0,
+    #     min_lr=0,
+    #     eps=1e-8,
+    # )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
     return scheduler
 
 
-def KLval(posterior_i, posterior_j, tol=1e-2, n_samples=3000, observation=None):
+def KLval(posterior_i, posterior_j, tol=1e-4, n_samples=3000, observation=None):
     KL_update, KL_old = 0.0, 0.0
     n_loops = 0
     while np.abs(KL_update - KL_old) > tol or n_loops == 0:
@@ -176,13 +181,19 @@ def KLval(posterior_i, posterior_j, tol=1e-2, n_samples=3000, observation=None):
     return KL_update
 
 
-train_data = NPEData(num_samples=n_train_data, prior=prior, simulator=simulator)
-val_data = NPEData(num_samples=n_val_data, prior=prior, simulator=simulator)
-train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=64, shuffle=True)
-val_dataloader = torch.utils.data.DataLoader(val_data, batch_size=64, shuffle=True)
 
 
-def run_inference(n_networks=n_networks, num_epochs=num_epochs):
+
+def run_inference(n_networks=n_networks, num_epochs=num_epochs, example_name="two_moons"):
+    task = sbibm.get_task(example_name)
+    prior = task.get_prior_dist()
+    simulator = task.get_simulator()
+    observation = task.get_observation(num_observation=1)
+    reference_samples = task.get_reference_posterior_samples(num_observation=1)
+    train_data = NPEData(num_samples=n_train_data, prior=prior, simulator=simulator)
+    val_data = NPEData(num_samples=n_val_data, prior=prior, simulator=simulator)
+    train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=64, shuffle=True)
+    val_dataloader = torch.utils.data.DataLoader(val_data, batch_size=64, shuffle=True)
     density_estimators = [build_density_estimator() for _ in range(n_networks)]
     optimizers = [
         AdamW(density_estimator.parameters(), lr=1e-3)
@@ -230,7 +241,8 @@ def run_inference(n_networks=n_networks, num_epochs=num_epochs):
         for network_id, scheduler in zip(range(n_networks), schedulers):
             epoch_val_loss[network_id] /= len(val_dataloader)
             val_losses[network_id].append(epoch_val_loss[network_id])
-            scheduler.step(epoch_val_loss[network_id])
+            #scheduler.step(epoch_val_loss[network_id])
+            scheduler.step()
             learning_rates[network_id].append(scheduler.get_last_lr())
 
         posteriors = []
@@ -243,16 +255,27 @@ def run_inference(n_networks=n_networks, num_epochs=num_epochs):
         for n_i in range(n_networks):
             for n_j in range(n_i + 1, n_networks):
 
-                print("Computing KL between networks", n_i, "and", n_j)
+                # print("Computing KL between networks", n_i, "and", n_j)
                 KL_vals[n_i, n_j] = KLval(
                     posteriors[n_i], posteriors[n_j], observation=observation
                 )
 
         divergence.append(KL_vals)
+    
+    p_samples = []
+    for posterior in posteriors:
+        p_samples.append(np.array(posterior.sample((10000,), x=observation, show_progress_bars=False)))
+    print(np.array(p_samples).shape)
+    
+
+    np.savez("/data/jbga2/projects/sbi_acp/data/" + example_name + ".npz", train=train_losses, val=val_losses, KL=divergence, post_samples=np.array(p_samples))
 
     return train_losses, val_losses, divergence
 
 
 if __name__ == "__main__":
-    res = run_inference()
-    np.savez(example_name + ".npz", train=res[0], val=res[1], KL=res[2])
+    # res = run_inference(num_epochs=500, example_name="two_moons")
+    # res = run_inference(num_epochs=500, example_name="gaussian_mixture")
+    res = run_inference(num_epochs=500, example_name="gaussian_linear")
+    # res = run_inference(num_epochs=500, example_name="gaussian_linear_uniform")
+    
