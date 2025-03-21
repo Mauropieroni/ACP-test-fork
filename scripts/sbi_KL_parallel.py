@@ -1,6 +1,7 @@
 import os
 import sbi
 import sbibm
+from sympy import ordered
 import torch
 from sbi.neural_nets.net_builders import build_nsf
 import torch
@@ -12,10 +13,11 @@ import corner
 import numpy as np
 
 n_networks = 4
-num_epochs = 300
+num_epochs = 10
 n_train_data = 10_000
 n_val_data = 1_000
 n_samples = 10_000
+KL_tol = 1e-2
 
 example_name = "two_moons"
 task = sbibm.get_task(example_name)
@@ -25,10 +27,13 @@ observation = task.get_observation(num_observation=1)
 reference_samples = task.get_reference_posterior_samples(num_observation=1)
 
 # save_path = "/data/jbga2/projects/sbi_acp/data/"
-save_path = "data"
+save_path = "data/"
 
 if not os.path.isdir(save_path):
     os.mkdir(save_path)
+
+
+lrs = [1e-2, 3e-3, 1e-3, 3e-4]
 
 
 def get_R(samples):
@@ -91,6 +96,10 @@ def plot_losses(
 
     plt.figure()
     for network_id in range(n_networks):
+        print(train_losses[network_id].shape)
+        print(val_losses[network_id].shape)
+        print(num_epochs)
+
         plt.plot(train_losses[network_id], c=colors[network_id], alpha=0.3)
         plt.plot(
             157 * np.linspace(1, num_epochs, num_epochs),
@@ -138,41 +147,56 @@ class NPEData(torch.utils.data.Dataset):
 
 
 def build_density_estimator(prior=prior, simulator=simulator):
-    # embedding_net = EmbeddingNet(in_features=2)
     dummy_data = NPEData(num_samples=64, prior=prior, simulator=simulator)
     density_estimator = build_nsf(
         batch_x=dummy_data.theta,
         batch_y=dummy_data.x,
         input_dim=dummy_data.x.shape[-1],
-        # embedding_net=embedding_net,
-        # hidden_features=128,
-        # num_transforms=3,
-        # num_bins=8,
-        # tails="linear",
-        # tail_bound=5,
-        # apply_unconditional_transform=False,
     )
     return density_estimator
 
 
 def setup_scheduler(optimizer):
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    #     optimizer,
-    #     mode="min",
-    #     factor=0.1,
-    #     patience=10,
-    #     verbose=True,
-    #     threshold=1e-4,
-    #     threshold_mode="rel",
-    #     cooldown=0,
-    #     min_lr=0,
-    #     eps=1e-8,
-    # )
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.8)
+
+    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, )
+
     return scheduler
 
 
-def KLval(posterior_i, posterior_j, tol=1e-4, n_samples=3000, observation=None):
+def swap_learning_rates(optimizer1, optimizer2):
+    """Swap learning rates between two optimizers."""
+    lr1 = optimizer1.param_groups[0]["lr"]
+    lr2 = optimizer2.param_groups[0]["lr"]
+
+    optimizer1.param_groups[0]["lr"] = lr2
+    optimizer2.param_groups[0]["lr"] = lr1
+
+
+def swap_schedulers(scheduler1, scheduler2):
+    """Swap states between two schedulers."""
+    state1 = scheduler1.state_dict()
+    state2 = scheduler2.state_dict()
+
+    scheduler1.load_state_dict(state2)
+    scheduler2.load_state_dict(state1)
+
+
+def swap_probability(val_loss1, val_loss2, lr1, lr2):
+    """Compute the swap probability for two learning rates."""
+
+    print("val_loss1:", val_loss1)
+    print("val_loss2:", val_loss2)
+    print("lr1:", lr1)
+    print("lr2:", lr2)
+
+    return min(
+        1,
+        np.exp(-(1 / lr1 - 1 / lr2) * (val_loss2 - val_loss1)),
+    )
+
+
+def KLval(posterior_i, posterior_j, tol=KL_tol, n_samples=3000, observation=None):
     KL_update, KL_old = 0.0, 0.0
     n_loops = 0
     while np.abs(KL_update - KL_old) > tol or n_loops == 0:
@@ -203,16 +227,19 @@ def run_inference(
     )
     val_dataloader = torch.utils.data.DataLoader(val_data, batch_size=64, shuffle=True)
     density_estimators = [build_density_estimator() for _ in range(n_networks)]
+
     optimizers = [
-        AdamW(density_estimator.parameters(), lr=1e-3)
-        for density_estimator in density_estimators
+        AdamW(density_estimator.parameters(), lr=lrs[i])
+        for i, density_estimator in enumerate(density_estimators)
     ]
 
     schedulers = [setup_scheduler(optimizer) for optimizer in optimizers]
+
     train_losses = [[] for _ in range(n_networks)]
     val_losses = [[] for _ in range(n_networks)]
     learning_rates = [[] for _ in range(n_networks)]
     divergence = []
+    orders = np.arange(n_networks)
 
     for epoch in range(num_epochs):
         for density_estimator in density_estimators:
@@ -227,10 +254,10 @@ def run_inference(
                 optimizer.step()
                 train_losses[network_id].append(loss.item())
 
-                print(
-                    f"Epoch {epoch + 1}, net_id: {network_id}, train loss: {loss.item()}",
-                    end="\r",
-                )
+                # print(
+                #     f"Epoch {epoch + 1}, net_id: {network_id}, train loss: {loss.item()}",
+                #     end="\r",
+                # )
                 network_id += 1
 
         for density_estimator in density_estimators:
@@ -255,20 +282,47 @@ def run_inference(
 
         posteriors = []
 
-        KL_vals = np.zeros((n_networks, n_networks))
+        if epoch % 10 == 0 and epoch > 1:
+            KL_vals = np.zeros((n_networks, n_networks))
 
-        for network_id, density_estimator in zip(range(n_networks), density_estimators):
-            posteriors.append(DirectPosterior(density_estimator, prior))
+            for network_id, density_estimator in zip(
+                range(n_networks), density_estimators
+            ):
+                posteriors.append(DirectPosterior(density_estimator, prior))
 
-        for n_i in range(n_networks):
-            for n_j in range(n_i + 1, n_networks):
+            for n_i in range(n_networks):
+                for n_j in range(n_i + 1, n_networks):
 
-                # print("Computing KL between networks", n_i, "and", n_j)
-                KL_vals[n_i, n_j] = KLval(
-                    posteriors[n_i], posteriors[n_j], observation=observation
-                )
+                    # print("Computing KL between networks", n_i, "and", n_j)
+                    KL_vals[n_i, n_j] = KLval(
+                        posteriors[n_i], posteriors[n_j], observation=observation
+                    )
 
-        divergence.append(KL_vals)
+            divergence.append(KL_vals)
+
+        lr_min = optimizers[orders[-1]].param_groups[0]["lr"]
+
+        for i in range(n_networks - 1):
+
+            swap_prob = swap_probability(
+                val_losses[orders[i]][-1],
+                val_losses[orders[i + 1]][-1],
+                optimizers[orders[i]].param_groups[0]["lr"] / lr_min,
+                optimizers[orders[i + 1]].param_groups[0]["lr"] / lr_min,
+            )
+
+            print("Swap probability:", swap_prob)
+
+            if np.random.rand() < swap_prob:
+
+                print("Swapping learning rates and schedulers")
+
+                swap_learning_rates(optimizers[orders[i]], optimizers[orders[i + 1]])
+                swap_schedulers(schedulers[orders[i]], schedulers[orders[i + 1]])
+
+                print(orders)
+                orders[i], orders[i + 1] = orders[i + 1], orders[i]
+                print(orders)
 
     p_samples = []
     for posterior in posteriors:
@@ -291,7 +345,7 @@ def run_inference(
 
 
 if __name__ == "__main__":
-    # res = run_inference(num_epochs=500, example_name="two_moons")
-    # res = run_inference(num_epochs=500, example_name="gaussian_mixture")
-    res = run_inference(num_epochs=500, example_name="gaussian_linear")
-    # res = run_inference(num_epochs=500, example_name="gaussian_linear_uniform")
+    # res = run_inference(num_epochs=num_epochs, example_name="gaussian_mixture")
+    res = run_inference(num_epochs=num_epochs, example_name="two_moons")
+    # res = run_inference(num_epochs=num_epochs, example_name="gaussian_linear")
+    # res = run_inference(num_epochs=num_epochs, example_name="gaussian_linear_uniform")
