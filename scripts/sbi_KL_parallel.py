@@ -2,6 +2,7 @@ import os
 import sbi
 import sbibm
 import tqdm
+import time
 from sympy import ordered
 import torch
 from sbi.neural_nets.net_builders import build_nsf
@@ -14,7 +15,8 @@ import corner
 import numpy as np
 
 n_networks = 5
-num_epochs = 100
+num_epochs = 350
+check_every = 10
 n_train_data = 500
 n_val_data = 1_000
 n_samples = 10_000
@@ -34,7 +36,11 @@ if not os.path.isdir(save_path):
     os.mkdir(save_path)
 
 
-lrs = [1e-2, 3e-3, 1e-3, 3e-4, 3e-4]
+lrs = np.append(np.geomspace(1e-2, 1e-3, 4), 1e-3)
+decreases = [.995, .95, .9, .8, .8]
+#[.85, .825, .8, .775, .775] 
+# #[.5, .5, .75, .9, .9]
+n_equals = 1 + len(lrs) - len(np.unique(lrs))
 
 
 def get_R(samples):
@@ -111,8 +117,8 @@ def plot_losses(
             # marker="o",
         )
 
-    for i in np.arange(1, num_epochs + 1, 10):
-        plt.axvline(i * rescale, c="grey", linestyle="--")
+    for i in range(0, int(num_epochs / check_every) + 1):
+        plt.axvline(i * rescale * check_every, c="grey", linestyle="--", alpha=0.3)
     plt.legend()
 
 
@@ -161,8 +167,8 @@ def build_density_estimator(prior=prior, simulator=simulator):
     return density_estimator
 
 
-def setup_scheduler(optimizer):
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.8)
+def setup_scheduler(optimizer, step_size=20, gamma=.8):
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
     # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, )
 
@@ -178,7 +184,7 @@ def swap_learning_rates(optimizer1, optimizer2):
     optimizer2.param_groups[0]["lr"] = lr1
 
 
-def swap_schedulers(scheduler1, scheduler2):
+def swap_schedulers(scheduler1, scheduler2, optimizer1, optimizer2):
     """Swap states between two schedulers."""
     state1 = scheduler1.state_dict()
     state2 = scheduler2.state_dict()
@@ -186,14 +192,85 @@ def swap_schedulers(scheduler1, scheduler2):
     scheduler1.load_state_dict(state2)
     scheduler2.load_state_dict(state1)
 
+    # optimizer1.param_groups[0]["lr"] = (
+    #     scheduler1.base_lrs[0] + scheduler2.base_lrs[0]
+    # ) / 2
+    # optimizer2.param_groups[0]["lr"] = (
+    #     scheduler1.base_lrs[0] + scheduler2.base_lrs[0]
+    # ) / 2
+
 
 def swap_probability(val_loss1, val_loss2, lr1, lr2):
     """Compute the swap probability for two learning rates."""
 
-    return min(
+    # factor1 is always positive, we want to swap if the loss for the 
+    # first network is lower, so for val_loss1 < val_loss2 factor2 is positive too 
+    factor1 = -(1/lr1 - 1 / lr2)
+    factor2 = -(val_loss1 - val_loss2)
+
+    if lr1 == lr2:
+        to_return = min(
         1,
-        np.exp(-(1 / lr1 - 1 / lr2) * (val_loss2 - val_loss1)),
+        np.exp(factor2),
     )
+
+    else:
+        to_return = min(
+        1,
+        np.exp(factor1 * factor2),
+    )
+
+    print(val_loss1, val_loss2, lr1, lr2)
+    print(factor1, factor2, to_return, '\n')
+
+    return to_return
+
+
+def swap_network_states(network1, network2):
+    """
+    Swap the states (parameters) of two neural networks.
+
+    Parameters:
+    -----------
+    network1, network2 : torch.nn.Module
+        The neural networks whose states will be swapped.
+    """
+    state1 = network1.state_dict()
+    state2 = network2.state_dict()
+
+    network1.load_state_dict(state2)
+    network2.load_state_dict(state1)
+
+
+def swap_optimizer_states(optimizer1, optimizer2):
+    """
+    Swap the internal states of two optimizers.
+
+    Parameters:
+    -----------
+    optimizer1, optimizer2 : torch.optim.Optimizer
+        The optimizers whose states will be swapped.
+    """
+    state1 = optimizer1.state_dict()
+    state2 = optimizer2.state_dict()
+
+    optimizer1.load_state_dict(state2)
+    optimizer2.load_state_dict(state1)
+
+
+def reset_optimizer(optimizer, model):
+    """
+    Reset the state of an optimizer and reinitialize it for a given model.
+
+    Parameters:
+    -----------
+    optimizer : torch.optim.Optimizer
+        The optimizer to reset.
+    model : torch.nn.Module
+        The model whose parameters the optimizer will manage.
+    """
+    optimizer.state = {}  # Clear the optimizer state
+    optimizer.param_groups[0]["params"] = model.parameters()  # Reassign parameters
 
 
 def KLval(posterior_i, posterior_j, tol=KL_tol, n_samples=3000, observation=None):
@@ -233,15 +310,20 @@ def run_inference(
         for i, density_estimator in enumerate(density_estimators)
     ]
 
-    schedulers = [setup_scheduler(optimizer) for optimizer in optimizers]
+    schedulers = [setup_scheduler(optimizers[i], step_size=check_every, gamma=decreases[i]) for i in range(len(lrs))]
 
     train_losses = [[] for _ in range(n_networks)]
     val_losses = [[] for _ in range(n_networks)]
     learning_rates = [[] for _ in range(n_networks)]
     divergence = []
-    orders = np.arange(n_networks)
+    orders = np.arange(n_networks, dtype=int)
+    t0 = time.perf_counter()
 
-    for epoch in tqdm.tqdm(range(num_epochs)):
+    epoch = 0
+    dd = 10
+
+    while dd > 0.1 and epoch < num_epochs:
+        # for epoch in tqdm.tqdm(range(num_epochs)):
         for density_estimator in density_estimators:
             density_estimator.train()
 
@@ -280,13 +362,10 @@ def run_inference(
             scheduler.step()
             learning_rates[network_id].append(scheduler.get_last_lr())
 
-        if (epoch % 10 == 0 and epoch > 1) or epoch == num_epochs - 1:
+        if (epoch % check_every == 0 and epoch > 1) or epoch == num_epochs - 1:
+            print(f"Now at epoch = {epoch}") #, end=" ")
             posteriors = []
-
-            lrs_now = [optimizer.param_groups[0]["lr"] for optimizer in optimizers]
-            n_equals = 1 + len(lrs_now) - len(np.unique(lrs_now))
-            print(lrs_now)
-            print("Number of equal learning rates:", n_equals)
+            n_swaps = 0
 
             KL_vals = np.zeros((n_equals, n_equals))
 
@@ -304,26 +383,60 @@ def run_inference(
                     )
 
             divergence.append(KL_vals)
+            loss_now = np.array(epoch_val_loss)
+            lrs_now = np.array([optimizer.param_groups[0]["lr"] for optimizer in optimizers])
 
             for i in range(n_networks - 1):
-
                 swap_prob = swap_probability(
-                    val_losses[orders[i]][-1],
-                    val_losses[orders[i + 1]][-1],
-                    optimizers[orders[i]].param_groups[0]["lr"] / np.min(lrs),
-                    optimizers[orders[i + 1]].param_groups[0]["lr"] / np.min(lrs),
+                    loss_now[orders[i]],
+                    loss_now[orders[i + 1]],
+                    lrs_now[orders[i]] / np.min(lrs_now  ),
+                    lrs_now[orders[i + 1]] / np.min(lrs_now  ),
                 )
 
                 # print("Swap probability:", swap_prob)
 
                 if np.random.rand() < swap_prob:
-
+                    n_swaps += 1
                     # print("Swapping learning rates and schedulers")
 
                     swap_learning_rates(
                         optimizers[orders[i]], optimizers[orders[i + 1]]
                     )
-                    swap_schedulers(schedulers[orders[i]], schedulers[orders[i + 1]])
+                    swap_schedulers(
+                        schedulers[orders[i]],
+                        schedulers[orders[i + 1]],
+                        optimizers[orders[i]],
+                        optimizers[orders[i + 1]],
+                    )
+
+                    loss_now[orders[i]], loss_now[orders[i + 1]] = (
+                        loss_now[orders[i + 1]], loss_now[orders[i]]
+                    )
+
+                    lrs_now[orders[i]], lrs_now[orders[i + 1]] = (
+                        lrs_now[orders[i + 1]], lrs_now[orders[i]]
+                    )
+                    
+                    orders[i], orders[i + 1] = (
+                        orders[i + 1], orders[i]
+                    )
+
+            print(orders)
+            print(loss_now[orders])
+            print(lrs_now[orders], '\n')
+
+                    # swap_network_states(
+                    #     optimizers[orders[i]], optimizers[orders[i + 1]]
+                    # )
+
+                    # swap_optimizer_states(
+                    #     optimizers[orders[i]], optimizers[orders[i + 1]]
+                    # )
+
+            dd = np.abs(divergence[-1][0, 1])
+            print(" n_swaps = %1d, divergence = %.2f, total time = %.2f" % (n_swaps, dd, time.perf_counter()-t0) )
+        epoch += 1
 
     p_samples = []
     for posterior in posteriors:
@@ -332,13 +445,12 @@ def run_inference(
                 posterior.sample((10000,), x=observation, show_progress_bars=False)
             )
         )
-    print(np.array(p_samples).shape)
 
     np.savez(
-        save_path + example_name + ".npz",
+        save_path + example_name + f"_{epoch}_{check_every}.npz",
         train=train_losses,
         val=val_losses,
-        KL=divergence,
+        KL=np.array(divergence),
         post_samples=np.array(p_samples),
     )
 
