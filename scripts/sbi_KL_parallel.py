@@ -37,8 +37,8 @@ if not os.path.isdir(save_path):
 
 
 lrs = np.append(np.geomspace(1e-2, 1e-3, 4), 1e-3)
-decreases = [.995, .95, .9, .8, .8]
-#[.85, .825, .8, .775, .775] 
+decreases = [0.995, 0.95, 0.9, 0.8, 0.8]
+# [.85, .825, .8, .775, .775]
 # #[.5, .5, .75, .9, .9]
 n_equals = 1 + len(lrs) - len(np.unique(lrs))
 
@@ -119,6 +119,7 @@ def plot_losses(
 
     for i in range(0, int(num_epochs / check_every) + 1):
         plt.axvline(i * rescale * check_every, c="grey", linestyle="--", alpha=0.3)
+
     plt.legend()
 
 
@@ -167,8 +168,10 @@ def build_density_estimator(prior=prior, simulator=simulator):
     return density_estimator
 
 
-def setup_scheduler(optimizer, step_size=20, gamma=.8):
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+def setup_scheduler(optimizer, step_size=20, gamma=0.8):
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=step_size, gamma=gamma
+    )
 
     # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, )
 
@@ -203,25 +206,25 @@ def swap_schedulers(scheduler1, scheduler2, optimizer1, optimizer2):
 def swap_probability(val_loss1, val_loss2, lr1, lr2):
     """Compute the swap probability for two learning rates."""
 
-    # factor1 is always positive, we want to swap if the loss for the 
-    # first network is lower, so for val_loss1 < val_loss2 factor2 is positive too 
-    factor1 = -(1/lr1 - 1 / lr2)
+    # factor1 is always positive, we want to swap if the loss for the
+    # first network is lower, so for val_loss1 < val_loss2 factor2 is positive too
+    factor1 = -(1 / lr1 - 1 / lr2)
     factor2 = -(val_loss1 - val_loss2)
 
     if lr1 == lr2:
         to_return = min(
-        1,
-        np.exp(factor2),
-    )
+            1,
+            np.exp(factor2),
+        )
 
     else:
         to_return = min(
-        1,
-        np.exp(factor1 * factor2),
-    )
+            1,
+            np.exp(factor1 * factor2),
+        )
 
     print(val_loss1, val_loss2, lr1, lr2)
-    print(factor1, factor2, to_return, '\n')
+    print(factor1, factor2, to_return, "\n")
 
     return to_return
 
@@ -310,7 +313,10 @@ def run_inference(
         for i, density_estimator in enumerate(density_estimators)
     ]
 
-    schedulers = [setup_scheduler(optimizers[i], step_size=check_every, gamma=decreases[i]) for i in range(len(lrs))]
+    schedulers = [
+        setup_scheduler(optimizers[i], step_size=check_every, gamma=decreases[i])
+        for i in range(len(lrs))
+    ]
 
     train_losses = [[] for _ in range(n_networks)]
     val_losses = [[] for _ in range(n_networks)]
@@ -363,7 +369,7 @@ def run_inference(
             learning_rates[network_id].append(scheduler.get_last_lr())
 
         if (epoch % check_every == 0 and epoch > 1) or epoch == num_epochs - 1:
-            print(f"Now at epoch = {epoch}") #, end=" ")
+            print(f"Now at epoch = {epoch}")  # , end=" ")
             posteriors = []
             n_swaps = 0
 
@@ -384,14 +390,16 @@ def run_inference(
 
             divergence.append(KL_vals)
             loss_now = np.array(epoch_val_loss)
-            lrs_now = np.array([optimizer.param_groups[0]["lr"] for optimizer in optimizers])
+            lrs_now = np.array(
+                [optimizer.param_groups[0]["lr"] for optimizer in optimizers]
+            )
 
             for i in range(n_networks - 1):
                 swap_prob = swap_probability(
                     loss_now[orders[i]],
                     loss_now[orders[i + 1]],
-                    lrs_now[orders[i]] / np.min(lrs_now  ),
-                    lrs_now[orders[i + 1]] / np.min(lrs_now  ),
+                    lrs_now[orders[i]] / np.min(lrs_now),
+                    lrs_now[orders[i + 1]] / np.min(lrs_now),
                 )
 
                 # print("Swap probability:", swap_prob)
@@ -411,31 +419,34 @@ def run_inference(
                     )
 
                     loss_now[orders[i]], loss_now[orders[i + 1]] = (
-                        loss_now[orders[i + 1]], loss_now[orders[i]]
+                        loss_now[orders[i + 1]],
+                        loss_now[orders[i]],
                     )
 
                     lrs_now[orders[i]], lrs_now[orders[i + 1]] = (
-                        lrs_now[orders[i + 1]], lrs_now[orders[i]]
+                        lrs_now[orders[i + 1]],
+                        lrs_now[orders[i]],
                     )
-                    
-                    orders[i], orders[i + 1] = (
-                        orders[i + 1], orders[i]
-                    )
+
+                    orders[i], orders[i + 1] = (orders[i + 1], orders[i])
 
             print(orders)
             print(loss_now[orders])
-            print(lrs_now[orders], '\n')
+            print(lrs_now[orders], "\n")
 
-                    # swap_network_states(
-                    #     optimizers[orders[i]], optimizers[orders[i + 1]]
-                    # )
+            # swap_network_states(
+            #     optimizers[orders[i]], optimizers[orders[i + 1]]
+            # )
 
-                    # swap_optimizer_states(
-                    #     optimizers[orders[i]], optimizers[orders[i + 1]]
-                    # )
+            # swap_optimizer_states(
+            #     optimizers[orders[i]], optimizers[orders[i + 1]]
+            # )
 
             dd = np.abs(divergence[-1][0, 1])
-            print(" n_swaps = %1d, divergence = %.2f, total time = %.2f" % (n_swaps, dd, time.perf_counter()-t0) )
+            print(
+                " n_swaps = %1d, divergence = %.2f, total time = %.2f"
+                % (n_swaps, dd, time.perf_counter() - t0)
+            )
         epoch += 1
 
     p_samples = []
