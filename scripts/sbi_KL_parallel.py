@@ -22,7 +22,7 @@ n_val_data = 1_000
 n_samples = 10_000
 KL_tol = 1e-2
 
-example_name = "two_moons"
+example_name = "gaussian_mixture" # "two_moons" #  example_name="two_moons")
 task = sbibm.get_task(example_name)
 prior = task.get_prior_dist()
 simulator = task.get_simulator()
@@ -449,13 +449,15 @@ def run_inference(
             )
         epoch += 1
 
-    p_samples = []
-    for posterior in posteriors:
-        p_samples.append(
-            np.array(
-                posterior.sample((10000,), x=observation, show_progress_bars=False)
-            )
-        )
+    p_samples = np.zeros((10, n_networks, n_samples, observation.shape[-1]))
+    for i in range(10):
+        observation = task.get_observation(num_observation=i+1)
+        j = 0
+        for posterior in posteriors:
+            p_samples[i,j] = np.array(
+                    posterior.sample((n_samples,), x=observation, show_progress_bars=False)
+                )
+            j += 1
 
     np.savez(
         save_path + example_name + f"_{epoch}_{check_every}.npz",
@@ -469,7 +471,4 @@ def run_inference(
 
 
 if __name__ == "__main__":
-    # res = run_inference(num_epochs=num_epochs, example_name="gaussian_mixture")
-    res = run_inference(num_epochs=num_epochs, example_name="two_moons")
-    # res = run_inference(num_epochs=num_epochs, example_name="gaussian_linear")
-    # res = run_inference(num_epochs=num_epochs, example_name="gaussian_linear_uniform")
+    res = run_inference(num_epochs=num_epochs, example_name=example_name)
