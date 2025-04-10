@@ -21,8 +21,9 @@ n_train_data = 500
 n_val_data = 1_000
 n_samples = 10_000
 KL_tol = 1e-2
+KL_stop = 0.1
 
-example_name = "gaussian_mixture" # "two_moons" #  example_name="two_moons")
+example_name = "gaussian_mixture"  # "two_moons" #  example_name="two_moons")
 task = sbibm.get_task(example_name)
 prior = task.get_prior_dist()
 simulator = task.get_simulator()
@@ -328,7 +329,7 @@ def run_inference(
     epoch = 0
     dd = 10
 
-    while dd > 0.1 and epoch < num_epochs:
+    while dd > KL_stop and epoch < num_epochs:
         # for epoch in tqdm.tqdm(range(num_epochs)):
         for density_estimator in density_estimators:
             density_estimator.train()
@@ -451,12 +452,12 @@ def run_inference(
 
     p_samples = np.zeros((10, n_networks, n_samples, observation.shape[-1]))
     for i in range(10):
-        observation = task.get_observation(num_observation=i+1)
+        observation = task.get_observation(num_observation=i + 1)
         j = 0
         for posterior in posteriors:
-            p_samples[i,j] = np.array(
-                    posterior.sample((n_samples,), x=observation, show_progress_bars=False)
-                )
+            p_samples[i, j] = np.array(
+                posterior.sample((n_samples,), x=observation, show_progress_bars=False)
+            )
             j += 1
 
     np.savez(
