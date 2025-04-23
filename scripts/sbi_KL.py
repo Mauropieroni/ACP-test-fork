@@ -17,7 +17,7 @@ def_shuffle = True
 which_dataloader = "resample"  # "fixed"  #  'regenerate' #
 
 
-num_epochs = 300
+num_epochs = 1000
 check_every = 10
 update_scheduler_every = 15
 n_train_data = 100
@@ -26,7 +26,7 @@ n_samples = 10_000
 
 
 KL_tol = 1e-3
-KL_stop = 0.01
+KL_stop = 1e-3
 lrs = [1e-2 for _ in range(n_networks)]
 decreases = [0.9 for _ in range(n_networks)]
 
@@ -205,8 +205,13 @@ def run_inference(
 
 if __name__ == "__main__":
 
-    n_train_data = [100, 200, 500, 1000, 2000, 5000, 10000]
+    n_train_data = [200, 500, 1000, 2000, 5000, 10000, 20000]
     n_val_data = [2 * v for v in n_train_data]
+
+    # n_train_data = [
+    #     100,
+    # ]
+    # n_val_data = [2 * v for v in n_train_data]
 
     for i in range(len(n_train_data)):
         save_path = "KL_data/" + str(n_train_data[i]) + "/"
