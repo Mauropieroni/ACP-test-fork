@@ -10,20 +10,28 @@ import numpy as np
 # Local
 import utils as ut
 
+
 n_networks = 3
+def_batch_size = 64
+def_shuffle = True
+which_dataloader = "resample"  # "fixed"  #  'regenerate' #
+
+
 num_epochs = 300
 check_every = 10
 update_scheduler_every = 15
-def_batch_size = 64
-def_shuffle = True
 n_train_data = 100
 n_val_data = n_train_data
 n_samples = 10_000
+
+
 KL_tol = 1e-3
 KL_stop = 0.01
+lrs = [1e-2 for _ in range(n_networks)]
+decreases = [0.9 for _ in range(n_networks)]
 
-which_dataloader = "resample"  # "fixed"  #  'regenerate'
 example_name = "gaussian_mixture"
+
 
 task = sbibm.get_task(example_name)
 prior = task.get_prior_dist()
@@ -33,8 +41,6 @@ reference_samples = task.get_reference_posterior_samples(num_observation=1)
 
 save_path = "KL_data/" + str(n_train_data) + "/"
 
-lrs = [1e-2 for _ in range(n_networks)]
-decreases = [0.9 for _ in range(n_networks)]
 
 combinations = []
 for i in range(n_networks):

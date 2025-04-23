@@ -1,20 +1,28 @@
 import sbi
 import sbibm
 import torch
-from sbi.neural_nets.net_builders import build_nsf
-import torch
 from torch.optim import AdamW
+from sbi.neural_nets.net_builders import build_nsf
 from sbi.inference.posteriors import DirectPosterior
 import matplotlib.pyplot as plt
 import corner
 
 import numpy as np
 
+import utils as ut
+
 n_networks = 4
+def_batch_size = 64
+def_shuffle = True
+which_dataloader = "resample"  # "fixed"  #  'regenerate' #
+
+
 num_epochs = 10
 n_train_data = 10_000
 n_val_data = 1_000
 n_samples = 10_000
+
+lr = 1e-2
 
 task = sbibm.get_task("two_moons")
 prior = task.get_prior_dist()
@@ -23,109 +31,14 @@ observation = task.get_observation(num_observation=1)
 reference_samples = task.get_reference_posterior_samples(num_observation=1)
 
 
-def get_R(samples):
-    """
-    Computes the Gelman-Rubin (GR) statistic for convergence assessment. The
-    GR statistic is a convergence diagnostic used to assess whether multiple
-    Markov chains have converged to the same distribution. Values close to 1
-    indicate convergence. For details see
-    https://en.wikipedia.org/wiki/Gelman-Rubin_statistic
-
-    Parameters:
-    -----------
-    samples : numpy.ndarray
-        Array containing MCMC samples with dimensions
-        (N_steps, N_chains, N_parameters).
-
-    Returns:
-    --------
-    R : numpy.ndarray
-        Array containing the Gelman-Rubin statistics indicating convergence for
-        the different parameters. Values close to 1 indicate convergence.
-
-    """
-
-    # Get the shapes
-    N_steps, N_chains, N_parameters = samples.shape
-
-    # Chain means
-    chain_mean = np.mean(samples, axis=0)
-
-    # Global mean
-    global_mean = np.mean(chain_mean, axis=0)
-
-    # Variance between the chain means
-    variance_of_means = (
-        N_steps
-        / (N_chains - 1)
-        * np.sum((chain_mean - global_mean[None, :]) ** 2, axis=0)
-    )
-
-    # Variance of the individual chain across all chains
-    intra_chain_variance = np.std(samples, axis=0, ddof=1) ** 2
-
-    # And its averaged value over the chains
-    mean_intra_chain_variance = np.mean(intra_chain_variance, axis=0)
-
-    # First term
-    term_1 = (N_steps - 1) / N_steps
-
-    # Second term
-    term_2 = variance_of_means / mean_intra_chain_variance / N_steps
-
-    # This is the R (as a vector running on the paramters)
-    return term_1 + term_2
-
-
-def plot_losses(train_losses, val_losses, colors=["r", "g", "b", "y"]):
-
-    plt.figure()
-    for network_id in range(n_networks):
-        plt.plot(train_losses[network_id], c=colors[network_id], alpha=0.3)
-        plt.plot(
-            157 * np.linspace(1, num_epochs, num_epochs),
-            val_losses[network_id],
-            c=colors[network_id],
-            marker="o",
-        )
-
-
-class EmbeddingNet(torch.nn.Module):
-    def __init__(self, in_features=2):
-        super().__init__()
-        self.net = torch.nn.Sequential(
-            torch.nn.Linear(in_features, 2),
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class NPEData(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        num_samples: int,
-        prior: torch.distributions.Distribution,
-        simulator,
-        seed: int = 44,
-    ):
-        super().__init__()
-        self.prior = prior
-        self.simulator = simulator
-
-        self.theta = prior.sample((num_samples,))
-        self.x = simulator(self.theta)
-
-    def __len__(self):
-        return self.theta.shape[0]
-
-    def __getitem__(self, index: int):
-        return self.theta[index, ...], self.x[index, ...]
-
-
 def build_density_estimator(prior=prior, simulator=simulator):
-    embedding_net = EmbeddingNet(in_features=2)
-    dummy_data = NPEData(num_samples=64, prior=prior, simulator=simulator)
+    embedding_net = ut.EmbeddingNet(in_features=2)
+    dummy_data = ut.NPEData(
+        num_samples=def_batch_size,
+        prior=prior,
+        simulator=simulator,
+        which_dataloader=which_dataloader,
+    )
     density_estimator = build_nsf(
         batch_x=dummy_data.theta,
         batch_y=dummy_data.x,
@@ -157,16 +70,30 @@ def setup_scheduler(optimizer):
     return scheduler
 
 
-train_data = NPEData(num_samples=n_train_data, prior=prior, simulator=simulator)
-val_data = NPEData(num_samples=n_val_data, prior=prior, simulator=simulator)
-train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=64, shuffle=True)
-val_dataloader = torch.utils.data.DataLoader(val_data, batch_size=64, shuffle=True)
+train_data = ut.NPEData(
+    num_samples=n_train_data,
+    prior=prior,
+    simulator=simulator,
+    which_dataloader=which_dataloader,
+)
+val_data = ut.NPEData(
+    num_samples=n_val_data,
+    prior=prior,
+    simulator=simulator,
+    which_dataloader=which_dataloader,
+)
+train_dataloader = torch.utils.data.DataLoader(
+    train_data, batch_size=def_batch_size, shuffle=def_shuffle
+)
+val_dataloader = torch.utils.data.DataLoader(
+    val_data, batch_size=def_batch_size, shuffle=def_shuffle
+)
 
 
 def run_inference(n_networks=n_networks, num_epochs=num_epochs):
     density_estimators = [build_density_estimator() for _ in range(n_networks)]
     optimizers = [
-        AdamW(density_estimator.parameters(), lr=1e-3)
+        AdamW(density_estimator.parameters(), lr=lr)
         for density_estimator in density_estimators
     ]
 
