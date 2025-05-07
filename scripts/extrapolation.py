@@ -15,19 +15,19 @@ import utils as ut
 n_freq_samples = 10
 obs_std = 0.01
 
-n_networks = 2
+n_networks = 5
 def_batch_size = 64
 def_shuffle = True
 
 num_epochs = 1000
 check_every = 10
 update_scheduler_every = 15
-n_train_data = 500
-n_val_data = 1000
+n_train_data = 1000
+n_val_data = 2000
 n_samples = 10_000
 
 KL_tol = 1e-3
-KL_stop = 2e-2
+KL_stop = 1e-3
 lrs = [1e-2 for _ in range(n_networks)]
 decreases = [0.9 for _ in range(n_networks)]
 
@@ -162,7 +162,10 @@ def run_inference(
         os.mkdir(save_path)
 
     print("Save path: ", save_path, "\n")
-
+    print(f"Will use {n_networks} networks")
+    print(f"Will use {n_train_data} training data")
+    print(f"Will use {n_val_data} validation data\n")
+    
     print("Generating training and validation data...", end=" ")
 
     train_data = NNPEData(
