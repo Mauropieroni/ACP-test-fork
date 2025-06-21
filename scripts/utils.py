@@ -166,6 +166,7 @@ def plot_losses(
     check_every,
     colors=["r", "g", "b", "y", "purple"],
     ax=None,
+    plot_legend=True,
 ):
 
     if ax is None:
@@ -197,4 +198,5 @@ def plot_losses(
     for i in range(0, int(num_epochs / check_every) + 1):
         ax.axvline(i * check_every, c="grey", linestyle="--", alpha=0.3)
 
-    ax.legend()  # ncols=2)
+    if plot_legend:
+        ax.legend()  # ncols=2)
