@@ -175,20 +175,26 @@ def plot_losses(
     n_networks, n_train_losses = train_losses.shape
     _, num_epochs = val_losses.shape
     rescale = int(n_train_losses / num_epochs)
-    x_vec = np.arange(n_train_losses) + 1
-    xx_vec = rescale * (np.arange(num_epochs) + 1)
+    x_vec = (np.arange(n_train_losses) + 1) / rescale
+    xx_vec = np.arange(num_epochs) + 1
 
     for network_id in range(n_networks):
-        ax.plot(x_vec, train_losses[network_id], c=colors[network_id], alpha=0.3)
+        ax.plot(
+            x_vec,
+            train_losses[network_id],
+            c=colors[network_id],
+            alpha=0.3,
+            label=f"Training loss network {network_id +1}",
+        )
         ax.plot(
             xx_vec,
             val_losses[network_id],
             c=colors[network_id],
-            label={network_id},
+            label=f"Validation loss network {network_id +1}",
             # marker="o",
         )
 
     for i in range(0, int(num_epochs / check_every) + 1):
-        ax.axvline(i * rescale * check_every, c="grey", linestyle="--", alpha=0.3)
+        ax.axvline(i * check_every, c="grey", linestyle="--", alpha=0.3)
 
-    ax.legend()
+    ax.legend()  # ncols=2)
