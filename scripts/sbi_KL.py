@@ -12,7 +12,7 @@ import utils as ut
 
 
 n_networks = 3
-def_batch_size = 64
+def_batch_size = 256
 def_shuffle = True
 which_dataloader = "resample"  # "fixed"  #  'regenerate' #
 
@@ -39,15 +39,16 @@ simulator = task.get_simulator()
 observation = task.get_observation(num_observation=1)
 reference_samples = task.get_reference_posterior_samples(num_observation=1)
 
-save_path = "KL_data/" + str(n_train_data) + "/"
+save_path = "new_KL_data/" + str(n_train_data) + "/"
 
 
 combinations = []
 for i in range(n_networks):
     for j in range(i + 1, n_networks):
         combinations.append((i, j))
+        combinations.append((j, i))
 
-n_combinations = int(n_networks * (n_networks - 1) / 2)
+n_combinations = int(n_networks * (n_networks - 1) )
 
 
 def run_inference(
@@ -205,7 +206,7 @@ def run_inference(
 
 if __name__ == "__main__":
 
-    n_train_data = [200, 500, 1000, 2000, 5000, 10000, 20000]
+    n_train_data = [512, 1024, 2048, 4096, 8192, 16384, 32768]
     n_val_data = [2 * v for v in n_train_data]
 
     # n_train_data = [
@@ -214,7 +215,7 @@ if __name__ == "__main__":
     # n_val_data = [2 * v for v in n_train_data]
 
     for i in range(len(n_train_data)):
-        save_path = "KL_data/" + str(n_train_data[i]) + "/"
+        save_path = "new_KL_data/" + str(n_train_data[i]) + "/"
 
         if not os.path.isdir(save_path):
             os.mkdir(save_path)

@@ -16,13 +16,13 @@ n_freq_samples = 10
 obs_std = 0.01
 
 n_networks = 5
-def_batch_size = 64
+def_batch_size = 128
 def_shuffle = True
 
 num_epochs = 1000
 check_every = 10
 update_scheduler_every = 15
-n_train_data = 1000
+n_train_data = 1280
 n_val_data = 2000
 n_samples = 10_000
 
@@ -41,8 +41,9 @@ combinations = []
 for i in range(n_networks):
     for j in range(i + 1, n_networks):
         combinations.append((i, j))
+        combinations.append((j, i))
 
-n_combinations = int(n_networks * (n_networks - 1) / 2)
+n_combinations = int(n_networks * (n_networks - 1) )
 
 
 def get_estimates(data):
@@ -283,8 +284,9 @@ def run_inference(
 
             dd = np.abs(np.max(divergence[-1]))
 
+            print("KL divergence values:\n", divergence[-1])
             print(
-                " divergence = %.3f, total time = %.2f" % (dd, time.perf_counter() - t0)
+                " divergence = %.3f, total time = %.2fs\n" % (dd, time.perf_counter() - t0)
             )
 
             kl_val = "{:.2f}".format(dd)
@@ -318,17 +320,17 @@ def run_inference(
 
 if __name__ == "__main__":
 
-    n_train_data = [1000]
-    n_val_data = [2 * v for v in n_train_data]
+    n_train_data_list = [n_train_data]
+    n_val_data = [2 * v for v in n_train_data_list]
 
-    for i in range(len(n_train_data)):
-        save_path = "extrapolation_data/" + str(n_train_data[i]) + "/"
+    for i in range(len(n_train_data_list)):
+        save_path = "new_extrapolation_data/" + str(n_train_data_list[i]) + "/"
 
         if not os.path.isdir(save_path):
             os.mkdir(save_path)
 
         res = run_inference(
-            n_train_data=n_train_data[i],
+            n_train_data=n_train_data_list[i],
             n_val_data=n_val_data[i],
             n_networks=n_networks,
             num_epochs=num_epochs,
