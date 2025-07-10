@@ -77,6 +77,21 @@ def KLval(posterior_i, posterior_j, tol, n_samples, observation=None):
     return KL_update
 
 
+def KLval_2(posterior_i, posterior_j, tol, n_samples, kwargs1, kwargs2):
+    KL_update, KL_old = 0.0, 0.0
+    n_loops = 0
+    while np.abs(KL_update - KL_old) > tol or n_loops == 0:
+        n_loops += 1
+        samples = posterior_i.rvs(**kwargs1, size=n_samples)
+        log_ratio = np.log(posterior_i.pdf(samples, **kwargs1)) - np.log(
+            posterior_j.pdf(samples, **kwargs2)
+        )
+        KL_old = KL_update
+        KL_update = (np.mean(log_ratio) + KL_old * (n_loops - 1)) / n_loops
+
+    return KL_update
+
+
 class EmbeddingNet(torch.nn.Module):
     def __init__(self, in_features=2):
         super().__init__()
