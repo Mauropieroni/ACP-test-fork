@@ -215,3 +215,5 @@ def plot_losses(
 
     if plot_legend:
         ax.legend()  # ncols=2)
+
+    return plt.gcf()

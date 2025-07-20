@@ -4,12 +4,18 @@ from random import shuffle
 import sbibm
 import time
 import torch
-from torch.optim import AdamW
+from torch.optim import AdamW, SGD, Adam
 from sbi.inference.posteriors import DirectPosterior
 import numpy as np
+import signal
+from utils import plot_losses
 
 # Local
 import utils as ut
+
+import torch
+
+torch.set_num_threads(1)  # Set number of threads to 1 to avoid issues with parallelism
 
 n_networks = 5
 def_batch_size = 64
@@ -24,10 +30,11 @@ n_val_data = 1_000
 n_samples = 10_000
 
 
-KL_tol = 1e-2
-KL_stop = 0.1
+KL_tol = 1e-3
+KL_stop = 1e-2
 
 example_name = "gaussian_linear"  # "gaussian_mixture"  #  example_name="two_moons")
+example_name = "gaussian_mixture"
 
 
 task = sbibm.get_task(example_name)
@@ -37,7 +44,7 @@ observation = task.get_observation(num_observation=1)
 reference_samples = task.get_reference_posterior_samples(num_observation=1)
 
 # save_path = "/data/jbga2/projects/sbi_acp/data/"
-save_path = "data/" + str(n_train_data) + "/"
+save_path = "data/adam/" + str(n_train_data) + "/"
 
 if not os.path.isdir(save_path):
     os.mkdir(save_path)
@@ -81,7 +88,7 @@ def swap_probability(val_loss1, val_loss2, lr1, lr2):
     # factor1 is always positive, we want to swap if the loss for the
     # first network is lower, so for val_loss1 < val_loss2 factor2 is positive too
     factor1 = -(1 / lr1 - 1 / lr2)
-    factor2 = -(val_loss1 - val_loss2)
+    factor2 = -(np.exp(val_loss1) - np.exp(val_loss2))
 
     if lr1 == lr2:
         to_return = min(
@@ -190,7 +197,7 @@ def run_inference(
     ]
 
     optimizers = [
-        AdamW(density_estimator.parameters(), lr=lrs[i])
+        Adam(density_estimator.parameters(), lr=lrs[i])
         for i, density_estimator in enumerate(density_estimators)
     ]
 
@@ -199,9 +206,11 @@ def run_inference(
         for i in range(len(lrs))
     ]
 
-    train_losses = [[] for _ in range(n_networks)]
-    val_losses = [[] for _ in range(n_networks)]
+    # train_losses = [[] for _ in range(n_networks)]
+    # val_losses = [[] for _ in range(n_networks)]
     learning_rates = [[] for _ in range(n_networks)]
+    train_losses = np.full((num_epochs, n_networks), np.nan)
+    val_losses = np.full((num_epochs, n_networks), np.nan)
     divergence = []
     orders = np.arange(n_networks, dtype=int)
     t0 = time.perf_counter()
@@ -209,130 +218,137 @@ def run_inference(
     epoch = 0
     dd = 10
 
-    while dd > KL_stop and epoch < num_epochs:
-        # for epoch in tqdm.tqdm(range(num_epochs)):
-        for density_estimator in density_estimators:
-            density_estimator.train()
+    try:
+        while dd > KL_stop and epoch < num_epochs:
+            # for epoch in tqdm.tqdm(range(num_epochs)):
+            for density_estimator in density_estimators:
+                density_estimator.train()
 
-        for theta, x in train_dataloader:
-            network_id = 0
-            for density_estimator, optimizer in zip(density_estimators, optimizers):
-                loss = density_estimator.loss(theta, x).mean()
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                train_losses[network_id].append(loss.item())
-
-                # print(
-                #     f"Epoch {epoch + 1}, net_id: {network_id}, train loss: {loss.item()}",
-                #     end="\r",
-                # )
-                network_id += 1
-
-        for density_estimator in density_estimators:
-            density_estimator.eval()
-
-        epoch_val_loss = [0.0 for _ in range(n_networks)]
-        with torch.no_grad():
-            for theta, x in val_dataloader:
+            for theta, x in train_dataloader:
                 network_id = 0
-                for density_estimator in density_estimators:
-                    epoch_val_loss[network_id] += (
-                        density_estimator.loss(theta, x).mean().item()
-                    )
+                for density_estimator, optimizer in zip(density_estimators, optimizers):
+                    loss = density_estimator.loss(theta, x).mean()
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    train_losses[epoch, network_id] = loss.item()
+
+                    # print(
+                    #     f"Epoch {epoch + 1}, net_id: {network_id}, train loss: {loss.item()}",
+                    #     end="\r",
+                    # )
                     network_id += 1
 
-        for network_id, scheduler in zip(range(n_networks), schedulers):
-            epoch_val_loss[network_id] /= len(val_dataloader)
-            val_losses[network_id].append(epoch_val_loss[network_id])
-            # scheduler.step(epoch_val_loss[network_id])
-            scheduler.step()
-            learning_rates[network_id].append(scheduler.get_last_lr())
+            for density_estimator in density_estimators:
+                density_estimator.eval()
 
-        if (epoch % check_every == 0 and epoch > 1) or epoch == num_epochs - 1:
-            print(f"Now at epoch = {epoch}")  # , end=" ")
-            posteriors = []
-            n_swaps = 0
+            epoch_val_loss = [0.0 for _ in range(n_networks)]
+            with torch.no_grad():
+                for theta, x in val_dataloader:
+                    network_id = 0
+                    for density_estimator in density_estimators:
+                        epoch_val_loss[network_id] += (
+                            density_estimator.loss(theta, x).mean().item()
+                        )
+                        network_id += 1
 
-            KL_vals = np.zeros((n_equals, n_equals))
+            for network_id, scheduler in zip(range(n_networks), schedulers):
+                epoch_val_loss[network_id] /= len(val_dataloader)
+                val_losses[epoch, network_id] = epoch_val_loss[network_id]
+                # scheduler.step(epoch_val_loss[network_id])
+                scheduler.step()
+                learning_rates[network_id].append(scheduler.get_last_lr())
 
-            for i in range(n_equals):
-                posteriors.append(
-                    DirectPosterior(density_estimators[orders[-1 - i]], prior)
+            if (epoch % check_every == 0 and epoch > 1) or epoch == num_epochs - 1:
+                print(f"Now at epoch = {epoch}")  # , end=" ")
+                posteriors = []
+                n_swaps = 0
+
+                KL_vals = np.zeros((n_equals, n_equals))
+
+                for i in range(n_equals):
+                    posteriors.append(
+                        DirectPosterior(density_estimators[orders[-1 - i]], prior)
+                    )
+
+                for n_i in range(n_equals):
+                    for n_j in range(n_i + 1, n_equals):
+
+                        # print("Computing KL between networks", n_i, "and", n_j)
+                        KL_vals[n_i, n_j] = ut.KLval(
+                            posteriors[n_i],
+                            posteriors[n_j],
+                            KL_tol,
+                            n_samples,
+                            observation=observation,
+                        )
+
+                divergence.append(KL_vals)
+                loss_now = np.array(epoch_val_loss)
+                lrs_now = np.array(
+                    [optimizer.param_groups[0]["lr"] for optimizer in optimizers]
                 )
 
-            for n_i in range(n_equals):
-                for n_j in range(n_i + 1, n_equals):
-
-                    # print("Computing KL between networks", n_i, "and", n_j)
-                    KL_vals[n_i, n_j] = ut.KLval(
-                        posteriors[n_i],
-                        posteriors[n_j],
-                        KL_tol,
-                        n_samples,
-                        observation=observation,
-                    )
-
-            divergence.append(KL_vals)
-            loss_now = np.array(epoch_val_loss)
-            lrs_now = np.array(
-                [optimizer.param_groups[0]["lr"] for optimizer in optimizers]
-            )
-
-            for i in range(n_networks - 1):
-                swap_prob = swap_probability(
-                    loss_now[orders[i]],
-                    loss_now[orders[i + 1]],
-                    lrs_now[orders[i]] / np.min(lrs_now),
-                    lrs_now[orders[i + 1]] / np.min(lrs_now),
-                )
-
-                # print("Swap probability:", swap_prob)
-
-                if np.random.rand() < swap_prob:
-                    n_swaps += 1
-                    # print("Swapping learning rates and schedulers")
-
-                    swap_learning_rates(
-                        optimizers[orders[i]], optimizers[orders[i + 1]]
-                    )
-                    swap_schedulers(
-                        schedulers[orders[i]],
-                        schedulers[orders[i + 1]],
-                        optimizers[orders[i]],
-                        optimizers[orders[i + 1]],
-                    )
-
-                    loss_now[orders[i]], loss_now[orders[i + 1]] = (
-                        loss_now[orders[i + 1]],
+                for i in range(n_networks - 1):
+                    swap_prob = swap_probability(
                         loss_now[orders[i]],
+                        loss_now[orders[i + 1]],
+                        lrs_now[orders[i]] / np.min(lrs_now),
+                        lrs_now[orders[i + 1]] / np.min(lrs_now),
                     )
 
-                    lrs_now[orders[i]], lrs_now[orders[i + 1]] = (
-                        lrs_now[orders[i + 1]],
-                        lrs_now[orders[i]],
-                    )
+                    # print("Swap probability:", swap_prob)
 
-                    orders[i], orders[i + 1] = (orders[i + 1], orders[i])
+                    if np.random.rand() < swap_prob:
+                        n_swaps += 1
+                        # print("Swapping learning rates and schedulers")
 
-            print(orders)
-            print(loss_now[orders])
-            print(lrs_now[orders], "\n")
+                        swap_learning_rates(
+                            optimizers[orders[i]], optimizers[orders[i + 1]]
+                        )
+                        swap_schedulers(
+                            schedulers[orders[i]],
+                            schedulers[orders[i + 1]],
+                            optimizers[orders[i]],
+                            optimizers[orders[i + 1]],
+                        )
 
-            # swap_network_states(
-            #     optimizers[orders[i]], optimizers[orders[i + 1]]
-            # )
+                        loss_now[orders[i]], loss_now[orders[i + 1]] = (
+                            loss_now[orders[i + 1]],
+                            loss_now[orders[i]],
+                        )
 
-            # swap_optimizer_states(
-            #     optimizers[orders[i]], optimizers[orders[i + 1]]
-            # )
+                        lrs_now[orders[i]], lrs_now[orders[i + 1]] = (
+                            lrs_now[orders[i + 1]],
+                            lrs_now[orders[i]],
+                        )
 
-            dd = np.abs(divergence[-1][0, 1])
-            print(
-                " n_swaps = %1d, divergence = %.2f, total time = %.2f"
-                % (n_swaps, dd, time.perf_counter() - t0)
-            )
-        epoch += 1
+                        orders[i], orders[i + 1] = (orders[i + 1], orders[i])
+
+                print(orders)
+                print(loss_now[orders])
+                print(lrs_now[orders], "\n")
+
+                # swap_network_states(
+                #     optimizers[orders[i]], optimizers[orders[i + 1]]
+                # )
+
+                # swap_optimizer_states(
+                #     optimizers[orders[i]], optimizers[orders[i + 1]]
+                # )
+
+                dd = np.abs(divergence[-1][0, 1])
+                print(
+                    " n_swaps = %1d, divergence = %.2f, total time = %.2f"
+                    % (n_swaps, dd, time.perf_counter() - t0)
+                )
+                fig = plot_losses(np.array(train_losses).T, np.array(val_losses).T, check_every)
+                fig.savefig("losses.png")
+            epoch += 1
+
+    except KeyboardInterrupt:
+        print("Exiting...")
+        pass
 
     p_samples = np.zeros((10, n_networks, n_samples, observation.shape[-1]))
     for i in range(10):
@@ -352,8 +368,13 @@ def run_inference(
         post_samples=np.array(p_samples),
     )
 
+
+    fig = plot_losses(np.array(train_losses).T, np.array(val_losses).T, check_every)
+    fig.savefig("losses.png")
+
     return train_losses, val_losses, divergence
 
 
 if __name__ == "__main__":
+
     res = run_inference(num_epochs=num_epochs, example_name=example_name)
